@@ -22,6 +22,7 @@ import { AgentManager, isTopLevelAgent } from "./agent-manager.js";
 import { getAgentConversation, getDefaultMaxTurns, getGraceTurns, getRememberAgents, normalizeMaxTurns, resolveEffectiveMaxTurns, SUBAGENT_TOOL_NAMES, setDefaultMaxTurns, setGraceTurns, setRememberAgents, steerAgent } from "./agent-runner.js";
 import { rowDescription, sourceIndicator, sourceLegend } from "./agent-source-badge.js";
 import { BUILTIN_TOOL_NAMES, getAgentConfig, getAllTypes, getAvailableTypes, getConfig, getFallbackSubagent, isDefaultsDisabled, NO_FALLBACK, registerAgents, resolveSpawnType, resolveType, setDefaultsDisabled, setFallbackSubagent } from "./agent-types.js";
+import { validateAgentRunner } from "./agy-runner.js";
 import { inChildSessionContext } from "./child-context.js";
 import { CompletionOutbox, NOTIFICATION_HOLD_MS } from "./completion-outbox.js";
 import { type RpcHandle, registerRpcHandlers } from "./cross-extension-rpc.js";
@@ -692,7 +693,9 @@ export default function (pi: ExtensionAPI) {
     // built with `undefined` renders `↻3` where the Agent tool renders `↻3≤20`.
     // Like the tool's own, it is a prediction — editing the agent file mid-run
     // leaves the displayed ceiling stale.
-    const { state, callbacks } = createActivityTracker(resolveEffectiveMaxTurns(dispatch.type, options?.maxTurns));
+    const isAgy = validateAgentRunner(getAgentConfig(dispatch.type), options);
+    const { state, callbacks } = createActivityTracker(isAgy ? undefined : resolveEffectiveMaxTurns(dispatch.type, options?.maxTurns));
+    if (isAgy) state.turnCount = 0;
     // Repaints are left to the manager's `onStart` callback, which already starts
     // the widget/fleet timers for agents that enter this way.
     const id = manager.spawn(piRef, ctxRef, dispatch.type, prompt, { ...options, ...callbacks });
@@ -815,6 +818,7 @@ export default function (pi: ExtensionAPI) {
         events: pi.events,
         pi,
         getCtx: () => currentCtx,
+        reloadAgents: reloadCustomAgents,
         manager: {
           spawn: spawnTopLevel,
           awaitStartup: (id) => manager.awaitStartup(id),
@@ -927,6 +931,10 @@ export default function (pi: ExtensionAPI) {
     if (resolved?.kind === "live") {
       const record = resolved.record;
       const target = `@${record.alias ?? record.handle ?? mention.handle}`;
+      if (record.runner === "agy") {
+        ctx.ui.notify(`${target} uses agy, which does not support steering or continuation. Start a new Agent task instead.`, "warning");
+        return { action: "handled" };
+      }
 
       if (record.status === "running" || record.status === "queued") {
         // Steering interrupts after the current tool call, exactly like the
@@ -1032,6 +1040,13 @@ export default function (pi: ExtensionAPI) {
     const type = resolveHandleToType(typeHandle, getAvailableTypes())
       ?? (alias ? resolveHandleToType(alias, getAvailableTypes()) : undefined);
     if (!type) return { action: "continue" };
+    let isAgy: boolean;
+    try {
+      isAgy = validateAgentRunner(getAgentConfig(type));
+    } catch (err) {
+      ctx.ui.notify(`Could not start @${handleBase(type)}: ${err instanceof Error ? err.message : String(err)}`, "error");
+      return { action: "handled" };
+    }
 
     // Claude Code never starts the agent itself: `@agent-<type>` becomes an
     // attachment asking the main model to do it, and the model writes the
@@ -1045,7 +1060,7 @@ export default function (pi: ExtensionAPI) {
     // conversation instead (mention-clone.ts): same messages, same system
     // prompt, off-screen, holding only the `Agent` tool. Nothing reaches the
     // chat, and what it starts is an ordinary top-level agent.
-    if (getAgentMentionMode() === "model") {
+    if (getAgentMentionMode() === "model" && !isAgy) {
       const label = `@${handleBase(type)}`;
       // "Prompting", not "Starting": in this mode nothing starts until the
       // off-screen clone has taken a whole model turn writing the agent's
@@ -1483,7 +1498,7 @@ export default function (pi: ExtensionAPI) {
     return available.map((name) => {
       const cfg = getAgentConfig(name);
       const modelSuffix = cfg?.model ? ` (${getModelLabelFromConfig(cfg.model)})` : "";
-      const toolsSuffix = ` (Tools: ${formatToolsSuffix(cfg)})`;
+      const toolsSuffix = cfg?.runner === "agy" ? " (Runner: agy — external CLI tools)" : ` (Tools: ${formatToolsSuffix(cfg)})`;
       return `- ${name}: ${cfg?.description ?? name}${modelSuffix}${toolsSuffix}`;
     }).join("\n");
   };
@@ -1498,7 +1513,8 @@ export default function (pi: ExtensionAPI) {
   const buildCompactTypeListText = () =>
     getAvailableTypes().map((name) => {
       const cfg = getAgentConfig(name);
-      return `- ${name}: ${firstSentence(cfg?.description ?? name)} (Tools: ${formatToolsSuffix(cfg)})`;
+      const toolsSuffix = cfg?.runner === "agy" ? " (Runner: agy — external CLI tools)" : ` (Tools: ${formatToolsSuffix(cfg)})`;
+      return `- ${name}: ${firstSentence(cfg?.description ?? name)}${toolsSuffix}`;
     }).join("\n");
 
   /** Derive a short model label from a model string. */
@@ -1922,14 +1938,27 @@ Terse command-style prompts produce shallow, generic work.
       // Get agent config (if any)
       const customConfig = getAgentConfig(subagentType);
 
+      const resumeTarget = params.resume ? manager.getRecord(params.resume) : undefined;
+      if (resumeTarget?.runner === "agy") {
+        throw new Error("agy agents do not support resume. Start a new Agent task instead.");
+      }
+      const isAgy = !params.resume && validateAgentRunner(customConfig, {
+        model: params.model,
+        thinkingLevel: params.thinking,
+        maxTurns: params.max_turns,
+        inheritContext: params.inherit_context,
+        isolated: params.isolated,
+        isolation: typeof params.isolation === "string" ? params.isolation : undefined,
+        schedule: typeof params.schedule === "string" ? params.schedule : undefined,
+      });
       const resolvedConfig = resolveAgentInvocationConfig(customConfig, params, {
         worktreeAllowed: isWorktreeIsolationEnabled(),
         defaultRunInBackground: getBackgroundByDefault(),
       });
 
       // Resolve model from agent config first; tool-call params only fill gaps.
-      let model = ctx.model;
-      if (resolvedConfig.modelInput) {
+      let model = isAgy ? undefined : ctx.model;
+      if (!isAgy && resolvedConfig.modelInput) {
         const resolved = resolveModel(resolvedConfig.modelInput, ctx.modelRegistry);
         if (typeof resolved === "string") {
           if (resolvedConfig.modelFromParams) return textResult(resolved);
@@ -1942,16 +1971,18 @@ Terse command-style prompts produce shallow, generic work.
       // Scope validation: the effective resolved model is checked against the
       // user's enabledModels list. Policy (hard error vs warn-and-proceed) lives
       // in model-scope.ts so the nested delegation tools apply the same rule.
-      const scopeVerdict = checkModelScope({
-        model,
-        cwd: ctx.cwd,
-        modelRegistry: ctx.modelRegistry,
-        callerSupplied: resolvedConfig.modelFromParams,
-        agentLabel: customConfig?.displayName ?? subagentType,
-        modelInput: resolvedConfig.modelInput,
-      });
-      if (scopeVerdict.kind === "error") return textResult(scopeVerdict.message);
-      if (scopeVerdict.kind === "warn") ctx.ui.notify(scopeVerdict.message, "warning");
+      if (!isAgy) {
+        const scopeVerdict = checkModelScope({
+          model,
+          cwd: ctx.cwd,
+          modelRegistry: ctx.modelRegistry,
+          callerSupplied: resolvedConfig.modelFromParams,
+          agentLabel: customConfig?.displayName ?? subagentType,
+          modelInput: resolvedConfig.modelInput,
+        });
+        if (scopeVerdict.kind === "error") return textResult(scopeVerdict.message);
+        if (scopeVerdict.kind === "warn") ctx.ui.notify(scopeVerdict.message, "warning");
+      }
 
       const thinking = resolvedConfig.thinking;
       const inheritContext = resolvedConfig.inheritContext;
@@ -1963,7 +1994,7 @@ Terse command-style prompts produce shallow, generic work.
       // default applies. `attachTranscript` below is the SOLE gate — every
       // downstream consumer keys off record.outputFile being set, so no spawn
       // path can re-enable the transcript by accident.
-      const outputTranscript = customConfig?.outputTranscript ?? getOutputTranscriptDefault();
+      const outputTranscript = !isAgy && (customConfig?.outputTranscript ?? getOutputTranscriptDefault());
       const attachTranscript = (rec: AgentRecord | undefined, agentId: string): void => {
         if (!rec || !outputTranscript) return;
         rec.outputFile = createOutputFilePath(ctx.cwd, agentId, ctx.sessionManager.getSessionId());
@@ -1987,8 +2018,8 @@ Terse command-style prompts produce shallow, generic work.
         if (typeof resolvedAsked === "string") return asked;
         return resolvedAsked.provider === model?.provider && resolvedAsked.id === model?.id ? undefined : asked;
       })(resolvedConfig.overridden?.model);
-      const effectiveMaxTurns = normalizeMaxTurns(resolvedConfig.maxTurns ?? getDefaultMaxTurns());
-      const agentInvocation: AgentInvocation = {
+      const effectiveMaxTurns = isAgy ? undefined : normalizeMaxTurns(resolvedConfig.maxTurns ?? getDefaultMaxTurns());
+      const agentInvocation: AgentInvocation = isAgy ? { runInBackground } : {
         modelName,
         modelId,
         thinking,
@@ -2005,7 +2036,7 @@ Terse command-style prompts produce shallow, generic work.
         isolation,
       };
       // Tool-result render shows the mode label too; viewer's header already does.
-      const modeLabel = getPromptModeLabel(subagentType);
+      const modeLabel = isAgy ? undefined : getPromptModeLabel(subagentType);
       const { tags: invocationTags } = buildInvocationTags(agentInvocation);
       const agentTags = modeLabel ? [modeLabel, ...invocationTags] : invocationTags;
       const detailBase = {
@@ -2033,7 +2064,7 @@ Terse command-style prompts produce shallow, generic work.
         if (!rec?.invocation) return detailBase;
         const type = rec.type;
         const { modelName: recModelName, tags } = buildInvocationTags(rec.invocation);
-        const recModeLabel = getPromptModeLabel(type);
+        const recModeLabel = rec.runner === "agy" ? undefined : getPromptModeLabel(type);
         const recTags = recModeLabel ? [recModeLabel, ...tags] : tags;
         return {
           displayName: getDisplayName(type),
@@ -2165,7 +2196,9 @@ Terse command-style prompts produce shallow, generic work.
           (record?.outputFile ? `Output file: ${record.outputFile}\n` : "") +
           (isQueued ? `Position: queued (max ${manager.getMaxConcurrent()} concurrent)\n` : "") +
           `\nYou will be notified when this agent completes.\n` +
-          `Use get_subagent_result to retrieve full results, or steer_subagent to send it messages.\n` +
+          (isAgy
+            ? `Use get_subagent_result to retrieve full results. agy does not support steering or resume.\n`
+            : `Use get_subagent_result to retrieve full results, or steer_subagent to send it messages.\n`) +
           `Do not duplicate this agent's work.`,
           { ...detailBaseFor(record), toolUses: 0, tokens: "", durationMs: 0, status: "background" as const, agentId: id },
         );
@@ -2174,6 +2207,7 @@ Terse command-style prompts produce shallow, generic work.
       // Background execution
       if (runInBackground) {
         const { state: bgState, callbacks: bgCallbacks } = createActivityTracker(effectiveMaxTurns);
+        if (isAgy) bgState.turnCount = 0;
 
         // Wrap onSessionCreated to wire output file streaming.
         // The callback lazily reads record.outputFile (set right after spawn)
@@ -2292,6 +2326,7 @@ Terse command-style prompts produce shallow, generic work.
       };
 
       const { state: fgState, callbacks: fgCallbacks } = createActivityTracker(effectiveMaxTurns, streamUpdate);
+      if (isAgy) fgState.turnCount = 0;
 
       // Wire session creation: register in widget + stream to output file.
       // The output file path is set synchronously after spawn (below),
@@ -2365,6 +2400,12 @@ Terse command-style prompts produce shallow, generic work.
           // Set up the output file so streamToOutputFile can pick it up.
           const fgRec = manager.getRecord(fgAgentId);
           attachTranscript(fgRec, fgAgentId);
+          if (isAgy) {
+            fgId = fgAgentId;
+            queuedAhead = undefined;
+            agentActivity.set(fgAgentId, fgState);
+            fleet.update();
+          }
           // Fires once the run promise exists, i.e. the agent is running. From
           // here until this call returns, the run can be handed off.
           handoffId = fgAgentId;
@@ -2991,6 +3032,9 @@ Terse command-style prompts produce shallow, generic work.
       if (!record || !isTopLevelAgent(record)) {
         return textResult(`Agent not found: "${params.agent_id}". It may have been cleaned up.`);
       }
+      if (record.runner === "agy") {
+        throw new Error("agy agents do not support steering. Stop the task via /agents or start a new Agent task.");
+      }
       if (record.status !== "running") {
         return textResult(`Agent "${params.agent_id}" is not running (status: ${record.status}). Cannot steer a non-running agent.`);
       }
@@ -3034,6 +3078,7 @@ Terse command-style prompts produce shallow, generic work.
 
   function getModelLabel(type: string, registry?: ModelRegistry): string {
     const cfg = getAgentConfig(type);
+    if (cfg?.runner === "agy") return `agy${cfg.agyModel ? ` (${cfg.agyModel})` : ""}`;
     if (!cfg?.model) return "inherit"; // no model configured → really inherits parent
     const label = getModelLabelFromConfig(cfg.model);
     if (!registry) return label;
@@ -3209,6 +3254,17 @@ Terse command-style prompts produce shallow, generic work.
   }
 
   async function viewAgentConversation(ctx: ExtensionCommandContext, record: AgentRecord) {
+    if (record.runner === "agy") {
+      ctx.ui.notify("agy conversation viewer is unsupported. Use get_subagent_result for the result.", "info");
+      const running = record.status === "running" || record.status === "queued";
+      const action = await ctx.ui.select(record.description, running ? ["Result", "Stop", "Back"] : ["Result", "Back"]);
+      if (action === "Stop" && manager.abort(record.id)) ctx.ui.notify(`Stopped "${record.description}".`, "info");
+      if (action === "Result") {
+        const result = record.result || record.error || (running ? "Agent is still running." : "No output.");
+        ctx.ui.notify(result.length > 2000 ? `${result.slice(0, 2000)}…\nUse get_subagent_result for the full result.` : result, "info");
+      }
+      return;
+    }
     if (!record.session) {
       ctx.ui.notify(`Agent is ${record.status === "queued" ? "queued" : "expired"} — no session available.`, "info");
       return;

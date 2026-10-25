@@ -38,6 +38,12 @@ export interface AgentConfig {
   /** Claude Code-compatible name color (named color or #RRGGBB). */
   color?: string;
   description: string;
+  /** Omitted/pi creates a Pi session; agy executes the CLI directly. Validated before spawn. */
+  runner?: string;
+  /** Antigravity model name, independent of Pi's model registry. */
+  agyModel?: string;
+  /** Explicitly auto-approve agy tools; not an OS sandbox. */
+  agySkipPermissions?: boolean;
   builtinToolNames?: string[];
   /** Raw `ext:` selector entries from the `tools:` CSV, e.g. ["ext:foo", "ext:bar/x"].
    * Presence of any entry flips extension tools to an explicit allowlist. */
@@ -179,6 +185,9 @@ export interface AgentRecord {
   alias?: string;
   description: string;
   status: "queued" | "running" | "completed" | "steered" | "aborted" | "stopped" | "error";
+  /** Captured at spawn so editing an agent definition cannot change live controls. */
+  runner?: "pi" | "agy";
+  agyConfig?: Pick<AgentConfig, "systemPrompt" | "agyModel" | "agySkipPermissions">;
   result?: string;
   error?: string;
   toolUses: number;

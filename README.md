@@ -1,5 +1,7 @@
 # @tintinweb/pi-subagents
 
+Personal fork: [XiaoXuxxxx/pi-subagents](https://github.com/XiaoXuxxxx/pi-subagents), maintained on `agy` for direct Antigravity media and internet agents. Upstream changes are integrated manually; this fork is not published to npm.
+
 A [pi](https://pi.dev) extension that brings **Claude Code-style autonomous sub-agents and workflow orchestration** to pi. Spawn specialized agents that run in isolated sessions — each with its own tools, system prompt, model, and thinking level. Run them in the background (the default) or block on them, steer them mid-run, resume completed sessions, and define your own custom agent types. When the orchestration shouldn't be improvised, hand a deterministic JavaScript script to the `SubagentWorkflow` tool — `agent()`, `parallel()`, `pipeline()` — and scripts written for Claude Code's `Workflow` tool run here unchanged.
 
 <img width="600" alt="pi-subagents screenshot" src="https://github.com/tintinweb/pi-subagents/raw/master/media/screenshot.png" />
@@ -330,6 +332,9 @@ All fields are optional — sensible defaults for everything.
 | Field | Default | Description |
 |-------|---------|-------------|
 | `description` | filename | Agent description shown in tool listings |
+| `runner` | `pi` | `pi` creates a Pi session; `agy` runs Antigravity directly without an intermediate Pi model. See [Antigravity agents](#antigravity-agents) |
+| `agy_model` | CLI default | Model name passed directly to Antigravity; independent of Pi's model registry |
+| `agy_skip_permissions` | `false` | Pass `--dangerously-skip-permissions` to Antigravity. Approves all its tools, not just access to the supplied files; not a sandbox |
 | `name` | filename | **The agent's type** — what `subagent_type` and `@handle` address. Claude Code's rule: the filename doesn't have to match, so `blubb.md` with `name: code-review` dispatches as `code-review`. Omit it and the filename is used. Any value works except one containing `:`, which Claude Code reserves for plugin-scoped identifiers — such a file is skipped with a warning. Two files may declare the same name; the later load wins, as a filename clash always did |
 | `display_name` | the type | Label shown in the UI (widget, agent list, badges) — cosmetic only, and independent of `name`. Claude Code has no equivalent; a file that sets only `name` badges as its type, unchanged |
 | `color` | — | Background color for the agent name badge in the Agent tool header, widget, FleetView, and conversation viewer. Supports Claude Code's `red`, `blue`, `green`, `yellow`, `purple`, `orange`, `pink`, `cyan` (the values its own default theme uses); quoted six-digit hex such as `"#8B5CF6"`; and Agency Agents aliases (`amber`, `teal`, `indigo`, `gold`, `neon-green`, `neon-cyan`, `metallic-blue`, `violet`, `rose`, `lime`, `gray`/`grey`, `fuchsia`, `slate`, `navy`). Badge text is black or white, whichever clears 4.5:1 against the rendered background — Claude Code uses one inverse color for every badge. Invalid values render no badge and preserve each surface's existing theme foreground |
@@ -360,6 +365,25 @@ Frontmatter is authoritative. If an agent file sets `model`, `thinking`, `max_tu
 - `inherit_context` applies only to `Agent` tool and nested spawns, including default-mode `@handle` mentions, which spawn through the `Agent` tool. As in Claude Code, where only a fork inherits the conversation, every other spawn starts fresh unless its caller asks: workflow children and scheduled runs never inherit, and an RPC caller opts in with `inheritContext`.
 
 **Forgiving `model:` resolution.** A `model:` pin is matched against pi's model registry tolerantly, so cosmetic id variations don't silently drop the agent back to the parent's model: `.` and `-` are treated as equivalent in version numbers (`claude-haiku-4.5` ≡ `claude-haiku-4-5`), a trailing `-YYYYMMDD` date stamp is optional (`anthropic/claude-haiku-4-5-20251001` matches an undated registry id and vice-versa), and a `provider/modelId` whose named provider doesn't carry that model retries the bare id against every provider. Precedence is **exact → fuzzy under the named provider → same model under any provider → unavailable**, so an exact match always wins and dated snapshots aren't conflated. If nothing resolves, the pin can't run and the agent inherits the parent model — `/agents → Agent types` flags this case as `(unavailable, fallback: inherit)` and shows the resolved target `(→ provider/id)` when resolution lands on a different provider or version than configured. (This is distinct from [Model Scope](#model-scope) enforcement, which matches the `enabledModels` allowlist by *exact* entry.)
+
+### Antigravity agents
+
+An agent with `runner: agy` launches an authenticated `agy` CLI on PATH directly, reusing this extension's concurrency queue, completion notifications, result collection, and stop controls. No Pi child session/model is created. Linux, macOS, and WSL are supported. Each invocation has a ten-minute timeout; stop/timeout sends TERM then KILL to its process group.
+
+```markdown
+---
+name: media
+runner: agy
+run_in_background: true
+---
+Inspect the supplied media. Report observations and uncertainty, citing paths and timestamps.
+```
+
+The agent body and task are sent as one prompt; Pi's conversation and attachments are not forwarded. Supply explicit file paths. Media/search capabilities and supported formats depend on the installed CLI, model, account, and tools. `agy_model` selects the CLI model without looking it up in Pi. The prompt is limited to 100,000 UTF-8 bytes and stream events to 4 MiB; token usage comes from the CLI, with no cost estimate.
+
+[Media](examples/agents/media.md) (images/audio/video/documents) and [internet](examples/agents/internet.md) profiles are provided as opt-in examples; copy them into your project or personal agents directory. **Both examples enable `agy_skip_permissions: true`.** That grants unsupervised tool execution with your user permissions. `--mode plan`, a specialist prompt, and the working directory are not security boundaries. Antigravity can load its own configuration/tools and contact external services. The runner forwards a limited environment for CLI authentication/runtime, but it can still access files as your user.
+
+This initial runner supports fresh top-level tasks, not Pi model/thinking/turn controls, inherited prompts/context, memory, persisted Pi sessions, Pi tool/extension/skill controls, custom cwd, worktree isolation, nested agents, workflows, scheduling, steering, or resume. Unsupported requests fail rather than silently losing their restrictions. The full Pi conversation viewer/transcript is unavailable; use `get_subagent_result` for results. Agent mentions start external tasks directly, without a hidden dispatch-model turn.
 
 ### Nested subagents
 
@@ -1024,6 +1048,7 @@ src/
 
   # Execution
   agent-runner.ts     # Session creation, execution, graceful max_turns, steer/resume
+  agy-runner.ts       # Direct Antigravity execution, streaming, cancellation, runner validation
   agent-manager.ts    # Agent lifecycle, concurrency queue, completion notifications
   nested-tools.ts     # Delegation tools handed to subagents (nested spawn/collect/steer)
   child-context.ts    # AsyncLocalStorage flag marking work done for a child session

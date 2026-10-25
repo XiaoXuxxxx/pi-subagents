@@ -20,7 +20,8 @@ import { Cron } from "croner";
 import { nanoid } from "nanoid";
 import type { AgentManager } from "./agent-manager.js";
 import { normalizeMaxTurns } from "./agent-runner.js";
-import { resolveSpawnType } from "./agent-types.js";
+import { getAgentConfig, resolveSpawnType } from "./agent-types.js";
+import { validateAgentRunner } from "./agy-runner.js";
 import { resolveModel } from "./model-resolver.js";
 import type { ScheduleStore } from "./schedule-store.js";
 import type { IsolationMode, ScheduledSubagent, SubagentType, ThinkingLevel } from "./types.js";
@@ -93,6 +94,7 @@ export class SubagentScheduler {
    * format and tags `scheduleType`. Throws on invalid input.
    */
   buildJob(input: NewJobInput): ScheduledSubagent {
+    this.validateTarget(input);
     const detected = SubagentScheduler.detectSchedule(input.schedule);
     return {
       id: nanoid(10),
@@ -139,6 +141,8 @@ export class SubagentScheduler {
   /** Toggle / mutate a job. Re-arms based on the new `enabled` state. */
   updateJob(id: string, patch: Partial<ScheduledSubagent>): ScheduledSubagent | undefined {
     const store = this.requireStore();
+    const existing = store.get(id);
+    if (existing && (patch.enabled ?? existing.enabled)) this.validateTarget({ ...existing, ...patch });
     const updated = store.update(id, patch);
     if (!updated) return undefined;
     this.unscheduleJob(id);
@@ -166,10 +170,16 @@ export class SubagentScheduler {
 
   // ── Scheduling primitives ────────────────────────────────────────────
 
+  private validateTarget(job: Pick<ScheduledSubagent, "subagent_type" | "schedule">): void {
+    const dispatch = resolveSpawnType(job.subagent_type);
+    validateAgentRunner(getAgentConfig(dispatch.ok ? dispatch.type : job.subagent_type), { schedule: job.schedule });
+  }
+
   private scheduleJob(job: ScheduledSubagent): void {
     const store = this.store;
     if (!store) return;
     try {
+      this.validateTarget(job);
       if (job.scheduleType === "interval" && job.intervalMs) {
         const t = setInterval(() => this.executeJob(job.id), job.intervalMs);
         this.intervals.set(job.id, t);
@@ -227,19 +237,20 @@ export class SubagentScheduler {
     const job = store.get(id);
     if (!job?.enabled) return;
 
-    store.update(id, { lastStatus: "running" });
-
-    // Resolve model at fire time — registry contents may have changed since the
-    // job was created (auth added/removed). Fall back silently to spawn-default
-    // if resolution fails; the spawn path handles undefined model gracefully.
-    let resolvedModel: any | undefined;
-    if (job.model) {
-      const r = resolveModel(job.model, ctx.modelRegistry);
-      if (typeof r !== "string") resolvedModel = r;
-    }
-
     let agentId: string;
     try {
+      this.validateTarget(job);
+      store.update(id, { lastStatus: "running" });
+
+      // Resolve model at fire time — registry contents may have changed since the
+      // job was created (auth added/removed). Fall back silently to spawn-default
+      // if resolution fails; the spawn path handles undefined model gracefully.
+      let resolvedModel: any | undefined;
+      if (job.model) {
+        const r = resolveModel(job.model, ctx.modelRegistry);
+        if (typeof r !== "string") resolvedModel = r;
+      }
+
       // Re-resolve at fire time against the registry as it stands. This does not
       // reload from disk (the scheduler has no reason to rebuild process-global
       // state from a timer), so it catches changes that went through /agents or

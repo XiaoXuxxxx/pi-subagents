@@ -67,6 +67,10 @@ One of these already shipped as a bug in this project's own README example, so i
 
 **None of these produce an error.** Option keys are not validated on this path at all — unknown ones are accepted and dropped. (Contrast `agent()` inside a [workflow](workflows.md), which rejects unknown keys by name.)
 
+## Antigravity targets
+
+A `runner: agy` agent can be spawned through the same RPC with `isBackground: true`, and returns results through the existing lifecycle events and consume channel without creating a Pi session. Select its CLI model with `agy_model` in the agent file, not `options.model`. Pi-only controls (model/thinking/turns, inherited context, isolation, structured output, custom cwd, nesting, workflows, and resume) are rejected before starting work. There is no Pi conversation/transcript for these records. See [Antigravity agents](../README.md#antigravity-agents) for permissions, limits, and unsupported features.
+
 ## Errors
 
 Every failure reaches the caller as `{ success: false, error }`, where `error` is `err?.message ?? String(err)` (`handleRpc` in `src/cross-extension-rpc.ts`) — so these strings are what you will actually see.

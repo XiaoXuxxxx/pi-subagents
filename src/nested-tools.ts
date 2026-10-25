@@ -15,6 +15,7 @@ import {
   resolveEnabledTypeIn,
   resolveTypeIn,
 } from "./agent-types.js";
+import { validateAgentRunner } from "./agy-runner.js";
 import { loadCustomAgents } from "./custom-agents.js";
 import { isolationParam, resolveAgentInvocationConfig } from "./invocation-config.js";
 import { resolveModel } from "./model-resolver.js";
@@ -186,6 +187,7 @@ export function createNestedSubagentTools(context: NestedToolContext): ToolDefin
         if (!ownsRecord(existing, context.parentAgentId)) {
           return textResult(`Nested agent not found or not owned by this parent: "${params.resume}".`, true);
         }
+        if (existing.runner === "agy") return textResult("agy agents do not support resume.", true);
         const resumed = await context.manager.resume(params.resume, params.prompt, signal);
         return resumed
           ? textResult(formatRecord(resumed, "inline"), resumed.status === "error")
@@ -222,6 +224,11 @@ export function createNestedSubagentTools(context: NestedToolContext): ToolDefin
       }
 
       const config = getAgentConfigIn(registry, resolvedType);
+      try {
+        validateAgentRunner(config, { parentAgentId: context.parentAgentId });
+      } catch (err) {
+        return textResult(err instanceof Error ? err.message : String(err), true);
+      }
       // Foreground regardless of `backgroundByDefault` — see the reasoning on
       // ResolveOptions. An explicit `true` here still opts in.
       const invocation = resolveAgentInvocationConfig(config, params, {
@@ -402,6 +409,7 @@ export function createNestedSubagentTools(context: NestedToolContext): ToolDefin
       if (!ownsRecord(record, context.parentAgentId) || record.status !== "running") {
         return textResult(`Running nested agent not found or not owned by this parent: "${params.agent_id}".`, true);
       }
+      if (record.runner === "agy") return textResult("agy agents do not support steering.", true);
       // Session not ready yet — queue the steer. The manager flushes pending
       // steers when the session is created (same contract as the top-level tool).
       if (!record.session) {

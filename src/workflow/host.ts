@@ -36,6 +36,7 @@ import { existsSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AgentManager } from "../agent-manager.js";
 import { getAgentConfig, resolveSpawnType } from "../agent-types.js";
+import { validateAgentRunner } from "../agy-runner.js";
 import { resolveModel } from "../model-resolver.js";
 import { checkModelScope } from "../model-scope.js";
 import type { AgentRecord, ThinkingLevel } from "../types.js";
@@ -203,6 +204,11 @@ export function createWorkflowHost(deps: WorkflowHostOptions): WorkflowHost {
       // back to the parent silently, because the script never asked for it.
       let model = ctx.model;
       const config = getAgentConfig(dispatch.type);
+      try {
+        validateAgentRunner(config, { workflowId: deps.workflowId ?? "workflow" });
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
       const modelInput = request.model ?? config?.model;
       if (modelInput !== undefined) {
         const resolved = resolveModel(modelInput, ctx.modelRegistry);

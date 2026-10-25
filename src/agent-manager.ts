@@ -19,8 +19,9 @@ import { statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import type { Model } from "@earendil-works/pi-ai";
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { resumeAgent, runAgent, type ToolActivity } from "./agent-runner.js";
+import { type RunOptions, type RunResult, resumeAgent, runAgent, type ToolActivity } from "./agent-runner.js";
 import { getAgentConfig } from "./agent-types.js";
+import { runAgyAgent, validateAgentRunner } from "./agy-runner.js";
 import { assignHandle, handleBase } from "./mention.js";
 import { describeModel } from "./model-resolver.js";
 import type { AgentInvocation, AgentRecord, AgentTombstone, IsolationMode, MentionResolution, Pool, SubagentType, ThinkingLevel } from "./types.js";
@@ -494,6 +495,8 @@ export class AgentManager {
     // Validate before the queue branch — a queued spawn should fail at the
     // call, not minutes later at drain. Throw (not warn): programmatic callers
     // can fix and retry; the RPC layer converts throws into error envelopes.
+    const config = getAgentConfig(type);
+    const isAgy = validateAgentRunner(config, options);
     assertValidSpawnCwd(options.cwd);
 
     const id = randomUUID().slice(0, 17);
@@ -501,6 +504,12 @@ export class AgentManager {
     const record: AgentRecord = {
       id,
       type,
+      runner: isAgy ? "agy" : "pi",
+      agyConfig: isAgy ? {
+        systemPrompt: config!.systemPrompt,
+        agyModel: config!.agyModel,
+        agySkipPermissions: config!.agySkipPermissions,
+      } : undefined,
       // Owned children — nested, or a workflow's — are filtered out of every
       // top-level surface, so no handle: nothing can address them and they must
       // not consume a name a top-level sibling could otherwise take.
@@ -730,7 +739,7 @@ export class AgentManager {
     // mentions pass none, and RPC forwards only its caller's value. Workflow
     // children are the exception, as in Claude Code, whose workflow agent()
     // reads only the script's option and ignores the definition's.
-    const isolation = options.workflowId !== undefined
+    const isolation = record.runner === "agy" ? undefined : options.workflowId !== undefined
       ? options.isolation
       : getAgentConfig(type)?.isolation ?? options.isolation;
     let worktreeCwd: string | undefined;
@@ -780,7 +789,7 @@ export class AgentManager {
     else this.armParentAbort(record, options.signal);
     const detach = () => this.detachParentAbort(record);
 
-    const promise = runAgent(ctx, type, prompt, {
+    const runOptions: RunOptions = {
       pi,
       agentId: id,
       model: options.model,
@@ -867,7 +876,11 @@ export class AgentManager {
         }
         options.onSessionCreated?.(session);
       },
-    })
+    };
+    const run: Promise<Omit<RunResult, "session"> & { session?: AgentSession }> = record.runner === "agy"
+      ? runAgyAgent(record.agyConfig!, prompt, { ...runOptions, cwd: ctx.cwd })
+      : runAgent(ctx, type, prompt, runOptions);
+    const promise = run
       .then(async ({ responseText, session, aborted, steered, failure, structuredJson, structuredRetried }) => {
         // Don't overwrite status if externally stopped via abort()
         if (record.status !== "stopped") {
@@ -1175,6 +1188,7 @@ export class AgentManager {
     options?: ResumeOptions,
   ): Promise<AgentRecord | undefined> {
     const record = this.agents.get(id);
+    if (record?.runner === "agy") throw new Error("agy agents do not support resume. Start a new Agent task instead.");
     if (!record?.session) return undefined;
 
     // Background resume: settle asynchronously and notify on completion exactly
@@ -1382,7 +1396,7 @@ export class AgentManager {
    */
   steer(id: string, message: string): boolean {
     const record = this.agents.get(id);
-    if (!record) return false;
+    if (!record || record.runner === "agy") return false;
     if (record.status !== "running" && record.status !== "queued") return false;
     if (record.session) {
       record.session.steer(message).catch(() => {});
@@ -1620,9 +1634,13 @@ export class AgentManager {
    */
   async dispose(pi?: ExtensionAPI): Promise<void> {
     clearInterval(this.cleanupInterval);
-    // Clear queue — via dequeue, so anyone blocked in spawnAndWait is woken
-    // rather than left awaiting a gate nothing will ever resolve.
-    this.dequeue(() => true);
+    // Settling during teardown must not deliver into the next activation.
+    this.onComplete = undefined;
+    this.onStart = undefined;
+    this.onCompact = undefined;
+    this.onUsage = undefined;
+    this.abortAll();
+    const externalRuns = [...this.agents.values()].filter(record => record.runner === "agy").map(record => record.promise);
     const sessions = [...this.agents.values()].map(record => record.session);
     this.agents.clear();
     this.startups.clear();
@@ -1640,6 +1658,17 @@ export class AgentManager {
     // Awaited, unlike the eviction path: pi awaits this extension's `session_shutdown`
     // handler and the process exits right after it returns, so anything left unawaited
     // here never runs at all. Bounded — each call carries its own ceiling, concurrently.
-    await Promise.all(sessions.map(session => shutdownChildSession(session)));
+    let externalTimeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.all([
+        ...sessions.map(session => shutdownChildSession(session)),
+        Promise.race([
+          Promise.allSettled(externalRuns),
+          new Promise<void>(resolve => { externalTimeout = setTimeout(resolve, CHILD_SHUTDOWN_TIMEOUT_MS); }),
+        ]),
+      ]);
+    } finally {
+      clearTimeout(externalTimeout);
+    }
   }
 }

@@ -14,6 +14,8 @@
  */
 
 import { isTopLevelAgent } from "./agent-manager.js";
+import { getAgentConfig, resolveSpawnType } from "./agent-types.js";
+import { validateAgentRunner } from "./agy-runner.js";
 import { type ModelRegistry, resolveModel } from "./model-resolver.js";
 import { checkModelScope } from "./model-scope.js";
 import type { AgentRecord } from "./types.js";
@@ -57,6 +59,8 @@ export interface RpcDeps {
   pi: unknown;                    // passed through to manager.spawn
   getCtx: () => unknown | undefined;  // returns current ExtensionContext
   manager: SpawnCapable;
+  /** Refresh definitions before runner validation and Pi model resolution. */
+  reloadAgents?: () => void;
 }
 
 export interface RpcHandle {
@@ -113,11 +117,14 @@ export function registerRpcHandlers(deps: RpcDeps): RpcHandle {
       // agent's auth lookup doesn't crash with "No API key found for
       // undefined".
       let normalizedOptions = options ?? {};
+      deps.reloadAgents?.();
+      const dispatch = resolveSpawnType(type);
+      const isAgy = validateAgentRunner(getAgentConfig(dispatch.ok ? dispatch.type : type), normalizedOptions);
       // `!= null` on purpose: a JSON-forwarding caller can serialize an unset
       // field as null, and the runner reads `options.model ?? default`, so null
       // means "inherit" — not an override to resolve or scope-check.
       const override = normalizedOptions.model;
-      if (override != null) {
+      if (!isAgy && override != null) {
         const { modelRegistry, cwd } = ctx as { modelRegistry?: ModelRegistry; cwd?: string };
         // Names the override the same way in both messages below; an object
         // override would otherwise interpolate as "[object Object]".

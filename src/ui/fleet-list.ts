@@ -244,16 +244,15 @@ export class FleetList {
 
   /**
    * Agents shown in the list, ordered earliest-launched first so the ones you
-   * started sooner sit at the top. Every row is openable (has a session), so Enter
-   * never dead-ends. Included: running/queued, plus the agent currently being
-   * viewed, plus recently-finished ones (they linger briefly before dropping out).
-   * Pending agents with no session yet are hidden until they start.
+   * started sooner sit at the top. Included: running/queued, plus the agent
+   * currently being viewed, plus recently-finished ones (they linger briefly).
+   * Pi agents wait for a session; agy agents have none and open an explanation.
    * (`listAgents()` is newest-first, so we re-sort.)
    */
   private agentRecords(): AgentRecord[] {
     const now = Date.now();
     return this.manager.listAgents()
-      .filter(a => isTopLevelAgent(a) && a.session && (
+      .filter(a => isTopLevelAgent(a) && (a.session || a.runner === "agy") && (
         a.status === "running" || a.status === "queued"
         || a.id === this.viewingAgentId
         || (a.completedAt != null && now - a.completedAt < FINISHED_LINGER_MS)
@@ -410,7 +409,9 @@ export class FleetList {
     const record = entry.record;
     if (!this.ui) return;
     if (!record.session) {
-      this.ui.notify(`Agent is ${record.status} — no session available.`, "info");
+      this.ui.notify(record.runner === "agy"
+        ? "agy conversation viewer is unsupported. Use get_subagent_result for the result or /agents to stop the task."
+        : `Agent is ${record.status} — no session available.`, "info");
       return;
     }
     const session = record.session;
