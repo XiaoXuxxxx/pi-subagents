@@ -507,6 +507,7 @@ export class AgentManager {
       runner: isAgy ? "agy" : "pi",
       agyConfig: isAgy ? {
         systemPrompt: config!.systemPrompt,
+        agyAgent: config!.agyAgent,
         agyModel: config!.agyModel,
         agySkipPermissions: config!.agySkipPermissions,
       } : undefined,

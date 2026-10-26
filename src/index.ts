@@ -3254,18 +3254,7 @@ Terse command-style prompts produce shallow, generic work.
   }
 
   async function viewAgentConversation(ctx: ExtensionCommandContext, record: AgentRecord) {
-    if (record.runner === "agy") {
-      ctx.ui.notify("agy conversation viewer is unsupported. Use get_subagent_result for the result.", "info");
-      const running = record.status === "running" || record.status === "queued";
-      const action = await ctx.ui.select(record.description, running ? ["Result", "Stop", "Back"] : ["Result", "Back"]);
-      if (action === "Stop" && manager.abort(record.id)) ctx.ui.notify(`Stopped "${record.description}".`, "info");
-      if (action === "Result") {
-        const result = record.result || record.error || (running ? "Agent is still running." : "No output.");
-        ctx.ui.notify(result.length > 2000 ? `${result.slice(0, 2000)}…\nUse get_subagent_result for the full result.` : result, "info");
-      }
-      return;
-    }
-    if (!record.session) {
+    if (!record.session && record.runner !== "agy") {
       ctx.ui.notify(`Agent is ${record.status === "queued" ? "queued" : "expired"} — no session available.`, "info");
       return;
     }
@@ -3281,7 +3270,7 @@ Terse command-style prompts produce shallow, generic work.
           if (manager.abort(record.id)) {
             ctx.ui.notify(`Stopped "${record.description}".`, "info");
           }
-        }, keybindings, (message: string) => manager.steer(record.id, message), showCost, getViewerMarkdown, (mode) => chooseViewerMarkdown(mode, ctx), getFullscreenScrollbar(),
+        }, keybindings, record.runner === "agy" ? undefined : (message: string) => manager.steer(record.id, message), showCost, getViewerMarkdown, (mode) => chooseViewerMarkdown(mode, ctx), getFullscreenScrollbar(),
         backgroundActionFor(record, message => ctx.ui.notify(message, "info")));
       },
       {

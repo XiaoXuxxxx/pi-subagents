@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { stripTerminalSequences, type TUI } from "@earendil-works/pi-tui";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentManager } from "../src/agent-manager.js";
 import { resumeAgent, runAgent } from "../src/agent-runner.js";
@@ -12,7 +13,8 @@ import { createNestedSubagentTools } from "../src/nested-tools.js";
 import { SubagentScheduler } from "../src/schedule.js";
 import { ScheduleStore } from "../src/schedule-store.js";
 import type { AgentConfig } from "../src/types.js";
-import { FleetList } from "../src/ui/fleet-list.js";
+import type { Theme } from "../src/ui/agent-widget.js";
+import { ConversationViewer } from "../src/ui/conversation-viewer.js";
 import { createWorkflowHost } from "../src/workflow/host.js";
 import { ctx, flush, type Hermetic, hermeticDir, makePi, textOf } from "./helpers/boot-extension.js";
 
@@ -30,7 +32,7 @@ vi.mock("../src/mention-clone.js", () => ({ runMentionClone: vi.fn() }));
 const config: AgentConfig = {
   name: "media", description: "Media research", runner: "agy", systemPrompt: "Research media.",
   promptMode: "replace", builtinToolNames: [], extensions: false, skills: false,
-  agyModel: "flash", agySkipPermissions: true,
+  agyAgent: "pi-subagent", agyModel: "flash", agySkipPermissions: true,
 };
 type Result = Awaited<ReturnType<typeof runAgyAgent>>;
 const done: Result = { responseText: "external answer", aborted: false, steered: false };
@@ -103,12 +105,12 @@ describe("agy manager lifecycle", () => {
     expect(manager.getRecord(second)?.status).toBe("queued");
     expect(runAgyAgent).toHaveBeenCalledTimes(1);
     expect(manager.abort(stopped)).toBe(true);
-    registerAgents(new Map([[config.name, { ...config, runner: "pi", systemPrompt: "changed", isolation: "worktree" }]]));
+    registerAgents(new Map([[config.name, { ...config, runner: "pi", agyAgent: "changed", systemPrompt: "changed", isolation: "worktree" }]]));
     finish(done);
     await manager.getRecord(first)!.promise;
     await manager.waitForAll();
     expect(runAgyAgent).toHaveBeenCalledTimes(2);
-    expect(vi.mocked(runAgyAgent).mock.calls[1][0]).toEqual({ systemPrompt: config.systemPrompt, agyModel: "flash", agySkipPermissions: true });
+    expect(vi.mocked(runAgyAgent).mock.calls[1][0]).toEqual({ systemPrompt: config.systemPrompt, agyAgent: "pi-subagent", agyModel: "flash", agySkipPermissions: true });
     expect(manager.getRecord(second)?.status).toBe("completed");
     expect(manager.getRecord(stopped)?.status).toBe("stopped");
     expect(runAgent).not.toHaveBeenCalled();
@@ -205,6 +207,20 @@ function boot() {
   return booted;
 }
 
+function viewerUI(mode: "regular" | "fullscreen") {
+  const tui = { mode, terminal: { rows: 30, columns: 120 }, requestRender: vi.fn() };
+  const theme: Theme = { fg: (_color, text) => text, bold: text => text };
+  let viewer: ConversationViewer;
+  let finish: ((result: undefined) => void) | undefined;
+  const close = () => { viewer?.dispose(); finish?.(undefined); };
+  const custom = vi.fn((factory: (tui: TUI, theme: Theme, keybindings: undefined, done: (result: undefined) => void) => ConversationViewer) => {
+    const pending = new Promise<undefined>(resolve => { finish = resolve; });
+    viewer = factory(tui as unknown as TUI, theme, undefined, close);
+    return pending;
+  });
+  return { tui, custom, close, get viewer() { return viewer; } };
+}
+
 describe("agy entrypoints", () => {
   it("starts via Agent without Pi model policy or a misleading transcript, and fetches the full result", async () => {
     const { tools, pi: api } = boot();
@@ -243,22 +259,65 @@ describe("agy entrypoints", () => {
     expect(call.ui.notify).toHaveBeenCalledWith(expect.stringContaining("does not support steering or continuation"), "warning");
   });
 
-  it("supports foreground execution and reachable /agents stop without a Pi session", async () => {
-    const { tools, commands } = boot();
+  it.each([
+    { mode: "regular", stop: false }, { mode: "fullscreen", stop: false },
+    { mode: "regular", stop: true }, { mode: "fullscreen", stop: true },
+  ] as const)("supports foreground execution and read-only /agents output ($mode, stop=$stop)", async ({ mode, stop }) => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    const { tools, commands, pi: api } = boot();
     const call = ctx();
     const inline = await tools.get("Agent").execute("inline", { subagent_type: "media", description: "inline", prompt: "task", run_in_background: false }, undefined, undefined, call);
     expect(textOf(inline)).toContain(done.responseText);
     expect(inline.details.status).toBe("completed");
-    holdRun();
+    const finish = holdRun();
     await tools.get("Agent").execute("background", { subagent_type: "media", description: "background", prompt: "task" }, undefined, undefined, call);
+    const options = vi.mocked(runAgyAgent).mock.calls[1][2];
+    const view = viewerUI(mode);
+    call.ui.custom = view.custom;
     call.ui.select = vi.fn()
       .mockImplementationOnce(async (_title, choices: string[]) => choices.find(s => s.startsWith("Running agents")))
       .mockImplementationOnce(async (_title, choices: string[]) => choices.find(s => s.includes("background")))
-      .mockResolvedValueOnce("Stop").mockResolvedValue(undefined);
-    await commands.get("agents").handler("", call);
-    expect(vi.mocked(runAgyAgent).mock.calls[1][2].signal?.aborted).toBe(true);
-    expect(call.ui.notify).toHaveBeenCalledWith('Stopped "background".', "info");
-    expect(runAgent).not.toHaveBeenCalled();
+      .mockResolvedValue(undefined);
+    const viewing = commands.get("agents").handler("", call);
+    try {
+      await flush();
+      const viewer = view.viewer;
+      const render = () => stripTerminalSequences(viewer.render(120).join("\n"));
+      options.onTextDelta?.("streamed media", "streamed media");
+      options.onToolActivity?.({ type: "start", toolName: "media_search" });
+      view.tui.requestRender.mockClear();
+      await vi.advanceTimersByTimeAsync(200);
+      expect(view.tui.requestRender).toHaveBeenCalled();
+      expect(render()).toContain("streamed media");
+      expect(render()).toContain("media_search");
+      expect(render()).not.toContain("Enter steer");
+      const browsing = viewer.render(120);
+      viewer.handleInput("\r");
+      expect(viewer.render(120)).toEqual(browsing);
+      viewer.handleInput("change course");
+      viewer.handleInput("\r");
+      expect(render()).not.toContain("change course");
+      expect(api.events.emit).not.toHaveBeenCalledWith("subagents:steered", expect.anything());
+      expect(options.signal?.aborted).toBe(false);
+      if (stop) {
+        viewer.handleInput("x");
+        expect(options.signal?.aborted).toBe(false);
+        viewer.handleInput("x");
+        expect(options.signal?.aborted).toBe(true);
+      }
+      finish({ ...done, aborted: stop });
+      await flush();
+      expect(render()).toContain(done.responseText);
+      expect(render()).not.toContain("streamed media");
+      expect(options.signal?.aborted).toBe(stop);
+      expect(runAgent).not.toHaveBeenCalled();
+    } finally {
+      view.close();
+      await viewing;
+    }
+    view.tui.requestRender.mockClear();
+    await vi.advanceTimersByTimeAsync(400);
+    expect(view.tui.requestRender).not.toHaveBeenCalled();
   });
 
   it("validates RPC targets before Pi model resolution and starts supported external calls", async () => {
@@ -309,23 +368,71 @@ describe("agy entrypoints", () => {
     } finally { scheduler.stop(); }
   });
 
-  it("keeps a sessionless agy task in FleetList and explains the unsupported viewer", () => {
-    manager = new AgentManager();
-    holdRun();
-    const id = manager.spawn(pi, context, "media", "task", { description: "research", isBackground: true });
+  it.each([
+    { mode: "regular", stop: false }, { mode: "fullscreen", stop: false },
+    { mode: "regular", stop: true }, { mode: "fullscreen", stop: true },
+  ] as const)("renders streamed and final agy output through FleetList ($mode, stop=$stop)", async ({ mode, stop }) => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    const { tools, lifecycle, pi: api } = boot();
+    const finish = holdRun();
     const call = ctx();
+    const view = viewerUI(mode);
+    call.ui.custom = view.custom;
+    call.ui.getEditorText = () => "";
     call.ui.onTerminalInput = vi.fn(() => vi.fn());
-    const fleet = new FleetList(manager, new Map());
-    fleet.setUICtx(call.ui);
+    await lifecycle.get("tool_execution_start")({}, call);
+    await tools.get("Agent").execute("background", { subagent_type: "media", description: "research", prompt: "task" }, undefined, undefined, call);
+    const options = vi.mocked(runAgyAgent).mock.calls[0][2];
+    const fleetInput = call.ui.onTerminalInput.mock.calls[0][0];
     try {
-      fleet.update();
-      expect(call.ui.setWidget).toHaveBeenCalledWith("fleet", expect.any(Function), { placement: "belowEditor" });
-      call.ui.getEditorText = () => "";
-      fleet.handleKey("\x1b[B");
-      fleet.handleKey("\x1b[B");
-      fleet.handleKey("\r");
-      expect(call.ui.notify).toHaveBeenCalledWith(expect.stringContaining("agy conversation viewer is unsupported"), "info");
-      expect(manager.getRecord(id)?.status).toBe("running");
-    } finally { fleet.dispose(); }
+      fleetInput("\x1b[B");
+      fleetInput("\x1b[B");
+      fleetInput("\r");
+      const viewer = view.viewer;
+      const render = () => stripTerminalSequences(viewer.render(120).join("\n"));
+      const lines = viewer.render(120);
+      if (mode === "fullscreen") {
+        expect(lines).toHaveLength(view.tui.terminal.rows);
+        expect(lines[0]).not.toContain("╭");
+      } else {
+        expect(lines.length).toBeLessThan(view.tui.terminal.rows);
+        expect(lines[0]).toContain("╭");
+      }
+      options.onTextDelta?.("first media chunk", "first media chunk");
+      expect(render()).toContain("first media chunk");
+      options.onTextDelta?.(" with details", "first media chunk with details");
+      options.onToolActivity?.({ type: "start", toolName: "media_search" });
+      view.tui.requestRender.mockClear();
+      await vi.advanceTimersByTimeAsync(200);
+      expect(view.tui.requestRender).toHaveBeenCalled();
+      expect(render()).toContain("first media chunk with details");
+      expect(render()).toContain("media_search");
+      expect(render()).not.toContain("Enter steer");
+      const browsing = viewer.render(120);
+      viewer.handleInput("\r");
+      expect(viewer.render(120)).toEqual(browsing);
+      viewer.handleInput("change course");
+      viewer.handleInput("\r");
+      expect(render()).not.toContain("change course");
+      expect(api.events.emit).not.toHaveBeenCalledWith("subagents:steered", expect.anything());
+      expect(options.signal?.aborted).toBe(false);
+      if (stop) {
+        viewer.handleInput("x");
+        expect(options.signal?.aborted).toBe(false);
+        viewer.handleInput("x");
+        expect(options.signal?.aborted).toBe(true);
+      }
+      finish({ ...done, aborted: stop });
+      await flush();
+      await vi.advanceTimersByTimeAsync(200);
+      expect(render()).toContain(done.responseText);
+      expect(render()).not.toContain("first media chunk");
+      expect(render()).not.toContain("media_search");
+      expect(options.signal?.aborted).toBe(stop);
+      expect(runAgent).not.toHaveBeenCalled();
+    } finally { view.close(); }
+    view.tui.requestRender.mockClear();
+    await vi.advanceTimersByTimeAsync(400);
+    expect(view.tui.requestRender).not.toHaveBeenCalled();
   });
 });

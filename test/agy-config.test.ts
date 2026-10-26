@@ -24,8 +24,9 @@ function agent(fields = ""): AgentConfig {
 
 describe("agy agent configuration", () => {
   it("loads the runner without inheriting Pi tools and accepts a CLI model and explicit permission grant", () => {
-    const loaded = agent("agy_model: chosen-cli-model\nagy_skip_permissions: true");
+    const loaded = agent("agy_agent: pi-subagent\nagy_model: chosen-cli-model\nagy_skip_permissions: true");
     expect(loaded.runner).toBe("agy");
+    expect(loaded.agyAgent).toBe("pi-subagent");
     expect(loaded.agyModel).toBe("chosen-cli-model");
     expect(loaded.agySkipPermissions).toBe(true);
     expect(loaded.builtinToolNames).toEqual([]);

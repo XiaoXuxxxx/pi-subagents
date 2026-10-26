@@ -184,7 +184,7 @@ export class ConversationViewer implements Component, Focusable {
 
   constructor(
     private tui: TUI,
-    private session: AgentSession,
+    private session: AgentSession | undefined,
     private record: AgentRecord,
     private activity: AgentActivity | undefined,
     private theme: Theme,
@@ -228,13 +228,21 @@ export class ConversationViewer implements Component, Focusable {
       render: width => this.buildContentLines(width),
       invalidate: () => {},
     }, { follow: "end", scrollbar: this.fullscreen ? scrollbarMode : "hidden" });
-    this.unsubscribe = session.subscribe(event => {
-      if (this.closed) return;
-      if (this.fullscreen && !this.scrollView.isFollowingEnd && event.type === "message_start" && ["user", "assistant", "toolResult", "bashExecution"].includes(event.message.role)) {
-        this.newMessages++;
-      }
-      this.tui.requestRender();
-    });
+    if (session) {
+      this.unsubscribe = session.subscribe(event => {
+        if (this.closed) return;
+        if (this.fullscreen && !this.scrollView.isFollowingEnd && event.type === "message_start" && ["user", "assistant", "toolResult", "bashExecution"].includes(event.message.role)) {
+          this.newMessages++;
+        }
+        this.tui.requestRender();
+      });
+    } else {
+      // External runners update activity/records without Pi session events.
+      const timer = setInterval(() => {
+        if (!this.closed) this.tui.requestRender();
+      }, 200);
+      this.unsubscribe = () => clearInterval(timer);
+    }
   }
 
   handleInput(data: string): void {
@@ -594,7 +602,7 @@ export class ConversationViewer implements Component, Focusable {
   }
 
   /** Render `text` as Markdown, reusing this message's component instance. */
-  private markdownLines(msg: AgentSession["messages"][number], text: string, width: number, dim: boolean): string[] {
+  private markdownLines(msg: object, text: string, width: number, dim: boolean): string[] {
     let entry = this.markdownCache.get(msg);
     if (!entry) {
       entry = {
@@ -640,7 +648,7 @@ export class ConversationViewer implements Component, Focusable {
 
   /** Steerable only when a steer handler exists and the agent is still active. */
   private canSteer(): boolean {
-    return !!this.onSteer && (this.record.status === "running" || this.record.status === "queued");
+    return !!this.session && !!this.onSteer && (this.record.status === "running" || this.record.status === "queued");
   }
 
   /**
@@ -711,8 +719,27 @@ export class ConversationViewer implements Component, Focusable {
     if (width <= 0) return [];
 
     const th = this.theme;
-    const messages = this.session.messages;
     const lines: string[] = [];
+    if (!this.session) {
+      lines.push(...this.rawLines("Antigravity output · read-only; tool arguments and results are not available.", width, true));
+      const text = (this.record.result ?? this.activity?.responseText)?.trim();
+      if (text) {
+        lines.push("", ...(this.markdownMode() === "off"
+          ? this.rawLines(text, width, false)
+          : this.markdownLines(this.record, text, width, false)));
+      } else {
+        const active = this.record.status === "running" || this.record.status === "queued";
+        lines.push(th.fg("dim", active ? "(waiting for output...)" : "(no output)"));
+      }
+      if (this.record.error) {
+        lines.push("", th.fg("error", "[Error]"), ...this.rawLines(this.record.error, width, false));
+      }
+      if (this.record.status === "running" && this.activity?.activeTools.size) {
+        lines.push("", th.fg("accent", "▍ ") + th.fg("dim", describeActivity(this.activity.activeTools)));
+      }
+      return lines.map(l => truncateToWidth(l, width));
+    }
+    const messages = this.session.messages;
 
     if (messages.length === 0) {
       lines.push(th.fg("dim", "(waiting for first message...)"));

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Select a native Antigravity agent with `agy_agent`** in runner frontmatter. A native agent with `inheritCustomizations: false` provides lean execution without changing the user's normal CLI configuration.
+
+### Fixed
+- **Antigravity agents open a read-only output viewer** from FleetView and `/agents`, showing streamed assistant text, current tool activity, final results, and errors. Scroll, Markdown mode, and stop controls remain available without pretending the external runner supports steering or a full Pi transcript.
+
 ## [0.22.0] - 2026-10-13
 
 > **⚠️ Possibly breaking — background completion delivery changed ([#388](https://github.com/tintinweb/pi-subagents/pull/388)):**

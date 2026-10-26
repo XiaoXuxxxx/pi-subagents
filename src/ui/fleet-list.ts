@@ -246,7 +246,7 @@ export class FleetList {
    * Agents shown in the list, ordered earliest-launched first so the ones you
    * started sooner sit at the top. Included: running/queued, plus the agent
    * currently being viewed, plus recently-finished ones (they linger briefly).
-   * Pi agents wait for a session; agy agents have none and open an explanation.
+   * Pi agents wait for a session; agy agents open a read-only output viewer.
    * (`listAgents()` is newest-first, so we re-sort.)
    */
   private agentRecords(): AgentRecord[] {
@@ -408,10 +408,8 @@ export class FleetList {
     }
     const record = entry.record;
     if (!this.ui) return;
-    if (!record.session) {
-      this.ui.notify(record.runner === "agy"
-        ? "agy conversation viewer is unsupported. Use get_subagent_result for the result or /agents to stop the task."
-        : `Agent is ${record.status} — no session available.`, "info");
+    if (!record.session && record.runner !== "agy") {
+      this.ui.notify(`Agent is ${record.status} — no session available.`, "info");
       return;
     }
     const session = record.session;
@@ -434,7 +432,7 @@ export class FleetList {
             if (this.manager.abort(record.id)) this.ui?.notify(`Stopped "${record.description}".`, "info");
           },
           keybindings,
-          (message: string) => this.manager.steer(record.id, message),
+          record.runner === "agy" ? undefined : (message: string) => this.manager.steer(record.id, message),
           this.showCost(),
           this.viewerMarkdown,
           this.onViewerMarkdown,

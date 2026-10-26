@@ -191,6 +191,7 @@ function loadOneFile(path: string, agents: Map<string, AgentConfig>, source: Age
     color: str(fm.color),
     description: str(fm.description) ?? name,
     runner: fm.runner === undefined ? undefined : String(fm.runner),
+    agyAgent: str(fm.agy_agent),
     agyModel: str(fm.agy_model),
     agySkipPermissions: fm.agy_skip_permissions === true,
     builtinToolNames: fm.runner === "agy" && fm.tools === undefined ? [] : builtinToolNames,

@@ -51,7 +51,7 @@ describe("direct agy runner", () => {
     const text: string[] = [];
     const tools: string[] = [];
     const usage = vi.fn();
-    const result = await runAgyAgent({ ...config, agyModel: "chosen-model" }, "Inspect '/tmp/a b.png'; $(touch nope)", {
+    const result = await runAgyAgent({ ...config, agyAgent: "pi-subagent", agyModel: "chosen-model" }, "Inspect '/tmp/a b.png'; $(touch nope)", {
       cwd, onTextDelta: (_, full) => text.push(full),
       onToolActivity: a => tools.push(`${a.type}:${a.toolName}`), onAssistantUsage: usage,
     });
@@ -61,6 +61,7 @@ describe("direct agy runner", () => {
     expect(usage).toHaveBeenCalledWith({ input: 12, output: 7, cacheRead: 3, cacheWrite: 0 });
     const request = JSON.parse(readFileSync(join(cwd, "request.json"), "utf8"));
     expect(request.args.slice(-2)).toEqual(["-p", "Describe supplied media.\n\nTask:\nInspect '/tmp/a b.png'; $(touch nope)"]);
+    expect(request.args[request.args.indexOf("--agent") + 1]).toBe("pi-subagent");
     expect(request.args).toContain("chosen-model");
     expect(request.args).toContain("plan");
     expect(request.args).not.toContain("--dangerously-skip-permissions");
@@ -73,6 +74,7 @@ describe("direct agy runner", () => {
     await runAgyAgent({ ...config, agySkipPermissions: true }, "inspect", { cwd });
     const request = JSON.parse(readFileSync(join(cwd, "request.json"), "utf8"));
     expect(request.args).toContain("--dangerously-skip-permissions");
+    expect(request.args).not.toContain("--agent");
   });
 
   it.each([

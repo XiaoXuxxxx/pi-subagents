@@ -40,6 +40,8 @@ export interface AgentConfig {
   description: string;
   /** Omitted/pi creates a Pi session; agy executes the CLI directly. Validated before spawn. */
   runner?: string;
+  /** Native Antigravity agent name, selected with --agent. */
+  agyAgent?: string;
   /** Antigravity model name, independent of Pi's model registry. */
   agyModel?: string;
   /** Explicitly auto-approve agy tools; not an OS sandbox. */
@@ -187,7 +189,7 @@ export interface AgentRecord {
   status: "queued" | "running" | "completed" | "steered" | "aborted" | "stopped" | "error";
   /** Captured at spawn so editing an agent definition cannot change live controls. */
   runner?: "pi" | "agy";
-  agyConfig?: Pick<AgentConfig, "systemPrompt" | "agyModel" | "agySkipPermissions">;
+  agyConfig?: Pick<AgentConfig, "systemPrompt" | "agyAgent" | "agyModel" | "agySkipPermissions">;
   result?: string;
   error?: string;
   toolUses: number;

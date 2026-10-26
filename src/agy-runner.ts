@@ -49,7 +49,7 @@ export function validateAgentRunner(config: AgentConfig | undefined, options: {
 const TIMEOUT_MS = 10 * 60_000;
 const MAX_LINE_BYTES = 4 * 1024 * 1024;
 
-export async function runAgyAgent(config: Pick<AgentConfig, "systemPrompt" | "agyModel" | "agySkipPermissions">, prompt: string, options: AgyRunOptions): Promise<AgyRunResult> {
+export async function runAgyAgent(config: Pick<AgentConfig, "systemPrompt" | "agyAgent" | "agyModel" | "agySkipPermissions">, prompt: string, options: AgyRunOptions): Promise<AgyRunResult> {
   if (options.signal?.aborted) {
     return { responseText: "", aborted: true, steered: false };
   }
@@ -63,6 +63,7 @@ export async function runAgyAgent(config: Pick<AgentConfig, "systemPrompt" | "ag
   }
 
   const args = ["--output-format", "stream-json", "--disable-slash-commands", "--mode", "plan", "--print-timeout", "10m"];
+  if (config.agyAgent) args.push("--agent", config.agyAgent);
   if (config.agyModel) args.push("--model", config.agyModel);
   if (config.agySkipPermissions) args.push("--dangerously-skip-permissions");
   args.push("-p", task);
