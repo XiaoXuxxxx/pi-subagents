@@ -1,6 +1,6 @@
 # @tintinweb/pi-subagents
 
-Personal fork: [XiaoXuxxxx/pi-subagents](https://github.com/XiaoXuxxxx/pi-subagents), maintained on `agy` for direct Antigravity media and internet agents. Upstream changes are integrated manually; this fork is not published to npm.
+Personal fork: [XiaoXuxxxx/pi-subagents](https://github.com/XiaoXuxxxx/pi-subagents), maintained on `agy` for a generic direct Antigravity runner. Agent definitions and instructions belong in the user's configuration, not this fork. Upstream changes are integrated manually; this fork is not published to npm.
 
 A [pi](https://pi.dev) extension that brings **Claude Code-style autonomous sub-agents and workflow orchestration** to pi. Spawn specialized agents that run in isolated sessions — each with its own tools, system prompt, model, and thinking level. Run them in the background (the default) or block on them, steer them mid-run, resume completed sessions, and define your own custom agent types. When the orchestration shouldn't be improvised, hand a deterministic JavaScript script to the `SubagentWorkflow` tool — `agent()`, `parallel()`, `pipeline()` — and scripts written for Claude Code's `Workflow` tool run here unchanged.
 
@@ -372,16 +372,16 @@ An agent with `runner: agy` launches an authenticated `agy` CLI on PATH directly
 
 ```markdown
 ---
-name: media
+name: external
 runner: agy
 run_in_background: true
 ---
-Inspect the supplied media. Report observations and uncertainty, citing paths and timestamps.
+Your specialist instructions go here.
 ```
 
 The agent body and task are sent as one prompt; Pi's conversation and attachments are not forwarded. Supply explicit file paths. Media/search capabilities and supported formats depend on the installed CLI, model, account, and tools. `agy_model` selects the CLI model without looking it up in Pi. The prompt is limited to 100,000 UTF-8 bytes and stream events to 4 MiB; token usage comes from the CLI, with no cost estimate.
 
-[Media](examples/agents/media.md) (images/audio/video/documents) and [internet](examples/agents/internet.md) profiles are provided as opt-in examples; copy them into your project or personal agents directory. **Both examples enable `agy_skip_permissions: true`.** That grants unsupervised tool execution with your user permissions. `--mode plan`, a specialist prompt, and the working directory are not security boundaries. Antigravity can load its own configuration/tools and contact external services. The runner forwards a limited environment for CLI authentication/runtime, but it can still access files as your user.
+Define specialist instructions in your project or personal agents directory. Permission bypass is opt-in with `agy_skip_permissions: true`; it grants unsupervised tool execution with your user permissions. `--mode plan`, a specialist prompt, and the working directory are not security boundaries. Antigravity can load its own configuration/tools and contact external services. The runner forwards a limited environment for CLI authentication/runtime, but it can still access files as your user.
 
 This initial runner supports fresh top-level tasks, not Pi model/thinking/turn controls, inherited prompts/context, memory, persisted Pi sessions, Pi tool/extension/skill controls, custom cwd, worktree isolation, nested agents, workflows, scheduling, steering, or resume. Unsupported requests fail rather than silently losing their restrictions. The full Pi conversation viewer/transcript is unavailable; use `get_subagent_result` for results. Agent mentions start external tasks directly, without a hidden dispatch-model turn.
 

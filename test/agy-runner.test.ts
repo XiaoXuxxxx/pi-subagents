@@ -153,14 +153,16 @@ describe("direct agy runner", () => {
     const result = await run;
     expect(result.aborted).toBe(true);
     const pid = Number(readFileSync(join(cwd, "child.pid"), "utf8"));
-    let state: string | undefined;
-    try {
-      process.kill(pid, 0);
-      state = readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1];
-    } catch (error) {
-      expect((error as NodeJS.ErrnoException).code).toMatch(/^(ESRCH|ENOENT)$/);
-    }
-    // A killed orphan may remain a zombie until the container's init reaps it.
-    if (state !== undefined) expect(state.startsWith("Z ")).toBe(true);
+    // Pipe EOF can precede the kernel's zombie transition; wait for process completion.
+    await vi.waitFor(() => {
+      let state: string | undefined;
+      try {
+        process.kill(pid, 0);
+        state = readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1];
+      } catch (error) {
+        expect((error as NodeJS.ErrnoException).code).toMatch(/^(ESRCH|ENOENT)$/);
+      }
+      if (state !== undefined) expect(state.startsWith("Z ")).toBe(true);
+    }, { timeout: 1000, interval: 10 });
   }, 5000);
 });
